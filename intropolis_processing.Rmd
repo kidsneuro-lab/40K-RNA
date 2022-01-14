@@ -1,0 +1,82 @@
+---
+title: "R Notebook"
+output: 
+---
+
+```{r message=FALSE}
+library(tidyverse)
+library(data.table)
+library(DBI)
+library(R.utils)
+```
+
+
+```{r}
+ensembl <- fread('data/ensembl_introns_unique_donor_sj.tsv.gz')
+
+ensembl[, `:=` (start = region_start, end = region_end, chr = chrom,
+                donor_pos = ifelse(strand == '+', region_start, region_end),
+                acceptor_pos = ifelse(strand == '+', region_end, region_start))]
+
+```
+
+
+```{r}
+# unique annotated donors
+ensembl_donors <- unique(ensembl[, .(chr, donor_pos)])
+ensembl_donors[, annotated_donor := 1]
+
+# unique annotated acceptors
+ensembl_acceptors <- unique(ensembl[, .(chr, acceptor_pos)])
+ensembl_acceptors[, annotated_acceptor := 1]
+
+# unique annotated introns
+ensembl_introns <- unique(ensembl[, .(chr, donor_pos, acceptor_pos)])
+ensembl_introns[, annotated_intron := 1]
+```
+
+
+
+```{r}
+int <- dbConnect(RSQLite::SQLite(), "intropolis_sj_stats/data/processed/intropolis_SJ_summary.sqlite")
+asj <- dbGetQuery(int, 'SELECT * FROM all_samples_sj_stats asj')
+
+dbDisconnect(int)
+setDT(asj)
+asj[, chr := gsub('chr', '', chr)]
+asj[, donor_pos := ifelse(strand == '+', start, end)]
+asj[, acceptor_pos := ifelse(strand == '+', end, start)]
+
+asj <- ensembl_donors[asj, on = .(chr, donor_pos)]
+asj <- ensembl_acceptors[asj, on = .(chr, acceptor_pos)]
+asj <- ensembl_introns[asj, on = .(chr, donor_pos, acceptor_pos)]
+asj[is.na(asj)] <- 0
+```
+
+```{r}
+asj[annotated_intron == 1 & annotated_donor == 1 & annotated_acceptor == 1,
+    splicing_event_class := 'normal splicing']
+# exon skipping
+asj[annotated_intron == 0 & annotated_donor == 1 & annotated_acceptor == 1, 
+    splicing_event_class := 'exon skipping']
+# cryptic donor
+asj[annotated_intron == 0 & annotated_donor ==  0 & annotated_acceptor == 1,
+    splicing_event_class := "cryptic donor"]
+#cryptic acceptor
+asj[annotated_intron == 0 & annotated_donor == 1 & annotated_acceptor == 0,
+    splicing_event_class := "cryptic acceptor"]
+# both splice junctions unannotated
+asj[is.na(splicing_event_class), splicing_event_class := 'both SJs unannotated']
+```
+
+```{r}
+
+
+#asj_unann <- asj[annotated_donor ==0  & annotated_acceptor == 0 ]
+asj_ann <- asj[annotated_donor == 1  | annotated_acceptor == 1 ]
+
+fwrite(asj_ann, 'output/intropolis_annotated.tsv.gz', sep='\t', compress = 'gzip')
+
+#fwrite(asj_unann, 'output/intropolis_unannotated.tsv.gz', sep='\t', compress = 'gzip')
+```
+

@@ -1,0 +1,115 @@
+from os.path import join
+import glob
+from transform_bed_to_tsv import convert_bed_to_tsv
+
+def get_tab_list():
+    return "~/path_to_gtex_sj_files/"
+
+rule combine_sj_tab:
+    input:
+        get_tab_list()
+    output:
+        join("data","processed","GTEx_V8.tab.gz")
+    params:
+        filetype="GTEX-1117F-*.gz"
+    shell:
+        "find {input} -name \"{params.filetype}\" | xargs zcat | gzip -c > {output}"
+
+rule sort_sj:
+    input:
+        rules.combine_sj_tab.output
+    output:
+        join("data","processed","GTEx_V8.sorted.tab.gz")
+    shell:
+        "gunzip -c {input} | LC_ALL=C sort -S50G --compress-program=gzip --parallel=4 -k 1,1g -k 2,2n -k 3,2n | gzip -c > {output}"
+
+rule summarise_sj:
+    input:
+        rules.sort_sj.output
+    output:
+        join("data","processed","GTEx_V8.sorted.summary.gz")
+    shell:
+        "gunzip -c {input} | LC_ALL=C datamash --format=\"%.0f\" groupby 1,2,3 "
+        " count 3 "
+        " unique 4 "
+        " unique 5 "
+        " unique 6 "
+        " min 7 "
+        " q1 7 "
+        " median 7 "
+        " q3 7 "
+        " max 7 "
+        " mean 7 "
+        " min 8 "
+        " q1 8 "
+        " median 8 "
+        " q3 8 "
+        " max 8 "
+        " mean 8 "
+        " perc:1 7 "
+        " perc:5 7 "
+        " perc:95 7 "
+        " perc:99 7 "
+        " perc:1 8 "
+        " perc:5 8 "
+        " perc:95 8 "
+        " perc:99 8 | gzip -c > {output}"
+
+rule generate_hg38_bed:
+    input:
+        rules.summarise_sj.output
+    output:
+        temp(join("data","processed","GTEx_V8.bed"))
+    shell:
+        "./gen_bed_from_summary.sh {input} {output}"
+
+rule liftover_to_hg19:
+    input:
+        rules.generate_hg38_bed.output
+    output:
+        mapped=temp(join("data","processed","GTEx_V8.liftover_hg19.bed")),
+        unmapped=temp(join("data","processed","GTEx_V8.liftover_hg19.unmapped"))
+    shell:
+        "liftOver {input} data/ref/hg38ToHg19.over.chain.gz {output.mapped} {output.unmapped}"
+
+rule sort_bed:
+    input:
+        rules.liftover_to_hg19.output.mapped
+    output:
+        temp(join("data","processed","GTEx_V8.liftover_hg19.sorted.bed.tmp"))
+    shell:
+        "bedtools sort -i {input} > {output}"
+
+rule finalise_bed:
+    input:
+        rules.sort_bed.output
+    output:
+        join("data","processed","GTEx_V8.liftover_hg19.sorted.bed")
+    shell:
+        "echo 'track name=\"GTEx V8 Splice Junctions\" gffTags=\"on\" itemRgb=\"On\" useScore=1' > {output}; "
+        "cat {input} >> {output}; "
+        "rm {input}"
+
+rule compress_bed:
+    input:
+        rules.finalise_bed.output
+    output:
+        join("data","processed","GTEx_V8.liftover_hg19.sorted.bed.gz")
+    shell:
+        "bgzip {input}; tabix -p bed -S 1 -f {output}"
+
+
+rule generate_protein_coding_bed:
+    input:
+        rules.compress_bed.output
+    output:
+        join("data","processed","GTEx_V8.liftover_hg19.sorted.PC.bed")
+    params:
+        prot_cod_genes=join("data","ref","ensembl_grch37_protein_coding_genes.sorted.bed.gz")
+    shell:
+        "bedtools window -a {params.prot_cod_genes} -b {input} >> {output}"
+
+
+rule all:
+    input:
+        join("data","processed","GTEx_V8.liftover_hg19.sorted.bed.gz")

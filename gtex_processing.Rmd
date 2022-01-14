@@ -1,0 +1,97 @@
+---
+title: "R Notebook"
+output: 
+---
+
+```{r message=FALSE}
+library(data.table)
+library(tidyverse)
+library(R.utils)
+```
+
+# Load Ensembl annotations
+```{r}
+ensembl <- fread('data/ensembl_introns_unique_donor_sj.tsv.gz')
+setDT(ensembl)
+ensembl[, `:=` (start = region_start, end = region_end, chr = chrom,
+                donor_pos = ifelse(strand == '+', region_start, region_end),
+                acceptor_pos = ifelse(strand == '+', region_end, region_start))]
+
+```
+
+
+```{r}
+# unique annotated donors
+ensembl_donors <- unique(ensembl[, .(chr, donor_pos)])
+ensembl_donors[, annotated_donor := 1]
+
+# unique annotated acceptors
+ensembl_acceptors <- unique(ensembl[, .(chr, acceptor_pos)])
+ensembl_acceptors[, annotated_acceptor := 1]
+
+# unique annotated introns
+ensembl_introns <- unique(ensembl[, .(chr, donor_pos, acceptor_pos)])
+ensembl_introns[, annotated_intron := 1]
+```
+
+# Load GTEx splice junctions
+```{r}
+gtex_sj <- fread('gtex_sj_stats/data/processed/GTEx_V8.liftover_hg19.sorted.tsv.gz', nThread = 4)
+setnames(gtex_sj, tolower(colnames(gtex_sj)))
+
+setnames(gtex_sj, 'chrom','chr')
+colnames(gtex_sj)[6] <- 'strand_numeric'
+```
+
+```{r}
+# When liftOver'ing hg38 to hg19, a few hg38 regions map to multiple hg19 regions
+# This results in seemingly duplicate hg19 entries.
+# What we're doing here is picking one of those entries prioritising no. of samples, reads and lastly splice junction id (this is just a ID for each row)
+# For more details on the duplication issue see: https://github.sydney.edu.au/kidsneuro-lab/missplicing_predictions/issues/1
+setorder(gtex_sj, chr, start, end, -n_samples, -max_uniq_map_reads, -max_multi_map_reads, sj_id)
+gtex_sj[,sj_id_rank := rowid(chr, start, end)]
+
+# Only keep the highest ranking splice junction (remove 'duplicates')
+gtex_sj <- gtex_sj[sj_id_rank == 1]
+
+# Remove sj_id_rank column
+gtex_sj[, sj_id_rank := NULL]
+```
+
+
+```{r}
+gtex_sj[, chr := gsub('chr', '', chr)]
+
+gtex_sj <- gtex_sj[strand_numeric != 0] # Drop rows where strand is undefined
+
+gtex_sj[, donor_pos := ifelse(strand == '+', start, end)]
+gtex_sj[, acceptor_pos := ifelse(strand == '+', end, start)]
+
+gtex_sj <- ensembl_donors[gtex_sj, on = .(chr, donor_pos)]
+gtex_sj <- ensembl_acceptors[gtex_sj, on = .(chr, acceptor_pos)]
+gtex_sj <- ensembl_introns[gtex_sj, on = .(chr, donor_pos, acceptor_pos)]
+
+gtex_sj[is.na(gtex_sj)] <- 0
+
+gtex_sj[annotated_intron == 1 & annotated_donor == 1 & annotated_acceptor == 1,
+    splicing_event_class := 'normal splicing']
+# exon skipping
+gtex_sj[annotated_intron == 0 & annotated_donor == 1 & annotated_acceptor == 1, 
+    splicing_event_class := 'exon skipping']
+# cryptic donor
+gtex_sj[annotated_intron == 0 & annotated_donor ==  0 & annotated_acceptor == 1,
+    splicing_event_class := "cryptic donor"]
+#cryptic acceptor
+gtex_sj[annotated_intron == 0 & annotated_donor == 1 & annotated_acceptor == 0,
+    splicing_event_class := "cryptic acceptor"]
+# both splice junctions unannotated
+gtex_sj[is.na(splicing_event_class), splicing_event_class := 'both SJs unannotated']
+
+gtex_sj_unann <- gtex_sj[annotated_donor == 0 & annotated_acceptor == 0 ]
+gtex_sj_ann <- gtex_sj[annotated_donor == 1  | annotated_acceptor == 1 ]
+
+fwrite(gtex_sj_ann, 'output/gtex_annotated.tsv.gz', sep='\t', compress = 'gzip')
+#fwrite(gtex_sj_unann, 'output/gtex_unannotated.tsv.gz', sep='\t', compress = 'gzip')
+```
+
+
