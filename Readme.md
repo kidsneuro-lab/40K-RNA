@@ -9,7 +9,7 @@ Git repo for amalgamating splicing events from various public (and non-public) R
 
 # output
 
-pre-processed 40K-RNA is available at [here](https://storage.googleapis.com/misspl-db-data/misspl_events_40k_hg19.sql.gz)
+pre-processed 40K-RNA is available [here](https://storage.googleapis.com/misspl-db-data/misspl_events_40k_hg19.sql.gz)
 
 # Instructions
 1. `gtex_sj_stats` contains code to combine individual GTEx SJ files and summarise. 
